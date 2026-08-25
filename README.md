@@ -1,93 +1,134 @@
 # MacroRSS
 
-MacroRSS is a **low-latency, resilient macro-event sensor for Gold (XAUUSD) and Forex**.
-It monitors first-hand official channels, normalizes documents into economic events, emits
-high-impact events on a non-blocking hot path, then durably spools and persists observations.
+**Low-latency, resilient macro-event sensor for Gold (XAUUSD) and Forex.**
 
-The system is deliberately **not RSS-only**. Source adapters support RSS/Atom, official HTML
-listings and JSON APIs without changing the scheduler/store core.
+MacroRSS monitors first-hand official channels (central banks, statistical agencies,
+regulators), normalizes each document into an economic event, emits high-impact events on a
+non-blocking hot path, and then durably spools and persists every observation. It is
+deliberately **not RSS-only**: source adapters handle RSS/Atom, official HTML listings and
+JSON APIs behind one scheduler/store core.
+
+> **Status:** implemented end-to-end and validated against the live MySQL backend
+> (172.16.0.41 via ProxySQL). A 45 s daemon run ingested 341 items from 18/18 enabled
+> sources with zero errors. What remains is production deployment and the destructive
+> chaos drills — see [Roadmap](#roadmap).
 
 ## Architecture
 
 ```text
-official sources
-      |
-      v
-async HTTP + conditional GET
-      |
-      v
-parse -> normalize -> deterministic dedup
-      |
-      +----> HOT PATH: stdout / JSONL / ZeroMQ / webhook / Telegram
-      |
-      v
-segmented local spool (append + fsync + atomic rename)
-      |
-      v
-MySQL / InnoDB historical store
+official sources (RSS/Atom · HTML · JSON API)
+      │
+      ▼
+async HTTP + conditional GET (ETag / If-Modified-Since)
+      │
+      ▼
+parse ─► normalize ─► deterministic document + event dedup
+      │
+      ├──► HOT PATH  (never blocked by the DB): stdout · JSONL · ZeroMQ · webhook · Telegram
+      │
+      ▼
+segmented local spool  (append + fsync + atomic rename, torn-record recovery)
+      │
+      ▼
+MySQL / InnoDB historical store  (idempotent replay)
 ```
 
-MySQL is **not** in the alert critical path. If MySQL or the LAN fails, collection and hot-path
-emission continue; ready spool segments are replayed idempotently after recovery.
+**MySQL is not in the alert critical path.** If MySQL or the LAN fails, collection and
+hot-path emission continue; ready spool segments replay idempotently after recovery. This is
+the core resilience property, because the historical store lives on a shared server we do not
+fully control (see [Durability](#durability)).
 
-## Current source catalog
+## Source catalog
 
-`config/feeds.yaml` currently contains 24 sources: 18 enabled and 6 retained but disabled until
-a robust official machine-readable adapter is validated. High-priority channels include:
+`config/feeds.yaml` — 24 sources, 18 enabled, 6 retained-but-disabled until a robust official
+machine-readable adapter is validated (enabling an unverified scraper would violate the
+source-quality gate). High-priority channels:
 
-- Federal Reserve monetary-policy and all-press RSS;
-- BLS latest releases;
-- BEA news;
-- **direct U.S. Treasury press-release HTML monitoring** plus Federal Register;
-- ECB MID + press releases;
-- BoJ, BoE, SNB, BoC and BIS;
-- CFTC and SEC.
+| Market driver | Sources |
+|---|---|
+| US macro (moves USD, yields, XAUUSD) | Federal Reserve (monetary + all-press), BLS, BEA |
+| US policy / sanctions | Treasury **direct press-release HTML** + Federal Register JSON API, Presidential Documents |
+| Non-US central banks | ECB (MID + press), BoJ, BoE, SNB, BoC, BIS speeches |
+| Regulation / positioning | CFTC (press + enforcement), SEC |
 
-`config/events.yaml` contains current high-impact burst-polling windows for CPI, NFP, PPI,
-JOLTS, PCE/GDP, FOMC and ECB decisions.
+`config/events.yaml` — high-impact burst-polling windows (CPI, NFP, PPI, JOLTS, PCE/GDP,
+FOMC, ECB decisions), so priority feeds poll tighter around scheduled releases.
+
+Two source types need content-aware handling and are configured in the catalog:
+
+- **Dashboard feeds** (e.g. BLS `bls_latest.rss`) ship a single item with a constant `<link>`;
+  the numbers live in the body. They set `parser_options: {dedup: content}` so each release is
+  detected — guid-only identity would drop every update after the first.
+- **Anti-bot walls** (Federal Register `/documents/search?...&format=rss` 302s to an "unblock"
+  page) are routed through the documented JSON API instead.
 
 ## Requirements
 
-- Python >= 3.11
-- Ubuntu/systemd recommended for production
-- MySQL 8+ for central persistence (optional while testing; spool-only mode works without it)
-- chrony/NTP synchronized host clock
+- Python ≥ 3.11
+- MySQL 8+ for central persistence (optional while testing — spool-only mode works without it)
+- Ubuntu / systemd recommended for production
+- chrony/NTP-synchronized host clock (feed timestamps are meaningless if the clock drifts)
 
-## Development install
+## Quickstart
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-pytest
+pytest                 # unit + regression suite
+
+cp .env.example .env   # then edit; .env is gitignored — never commit credentials
+macrorss check-config  # validate feeds + event calendar
+macrorss check-db      # connect to MySQL, validate schema + durability
+macrorss probe fed-monetary   # fetch+parse one source once, no writes
+macrorss run           # run the collector daemon
 ```
 
 ## Database bootstrap
 
-Run `deploy/schema.sql` as a MySQL administrator, then create a dedicated `macrorss` user with
-only `SELECT, INSERT, UPDATE` on the `macrorss` database. See `deploy/grants.sql.example`.
+The repository is **public**: credentials live only in `.env` (gitignored) and are read from
+the environment (`MACRORSS_DB_*`). Nothing else is committed.
 
-Copy `.env.example` outside the repository, set `MACRORSS_DB_PASSWORD`, and never commit it.
+As a MySQL administrator, create the database and a dedicated application user:
+
+```sql
+CREATE DATABASE macrorss CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'macrorss'@'%' IDENTIFIED BY '<strong-password>';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, INDEX, ALTER, REFERENCES
+  ON macrorss.* TO 'macrorss'@'%';
+FLUSH PRIVILEGES;
+```
+
+Then apply the schema (`deploy/schema.sql`) once and point `.env` at the server.
+
+Notes from a real deployment:
+
+- If the server enforces `validate_password` (policy MEDIUM), the app password needs
+  upper+lower, a digit and a special character, length ≥ 8.
+- Behind **ProxySQL**, the application connects on the ProxySQL port (e.g. `6033`), and the
+  user must also be registered in ProxySQL's `mysql_users` (same hostgroup as your other
+  app users) — creating it in the MySQL backend alone is not routable.
+- `check-db` reports `innodb_flush_log_at_trx_commit`; if it is not `1`, the local spool is
+  your primary crash guarantee (see below).
 
 ## CLI
 
 ```bash
-macrorss check-config
-macrorss check-db
-macrorss sources
-macrorss probe fed-monetary
-macrorss run
-macrorss status
-macrorss spool-status
-macrorss tail --tag gold
-macrorss replay-spool
-macrorss emit-test
+macrorss check-config    # validate feeds + event calendar
+macrorss check-db        # MySQL schema + durability check
+macrorss sources         # list configured sources
+macrorss probe <id>      # fetch + parse one source once (no writes)
+macrorss run             # run the daemon
+macrorss status          # last metrics/status snapshot
+macrorss spool-status    # local durable spool status
+macrorss replay-spool    # flush ready spool segments to MySQL now
+macrorss tail --tag gold # recent locally emitted events
+macrorss emit-test       # emit a synthetic event through configured sinks
 ```
 
 ## Low-latency outputs
 
-stdout JSON and a local JSONL event journal are enabled by default. Optional outputs are set by
-environment variables:
+stdout JSON and a local JSONL event journal are on by default. Optional sinks via environment:
 
 ```bash
 MACRORSS_ZMQ_BIND=tcp://0.0.0.0:5557
@@ -96,29 +137,39 @@ MACRORSS_TELEGRAM_BOT_TOKEN=...
 MACRORSS_TELEGRAM_CHAT_ID=...
 ```
 
-ZeroMQ/webhook payloads include `event_fingerprint`, which is the consumer idempotency key.
-Telegram is intended for human supervision, not as the primary automated trading transport.
+ZeroMQ/webhook payloads carry `event_fingerprint`, the consumer's idempotency key. Telegram is
+for human supervision, not the primary automated trading transport.
 
-## Latency metrics
+Internal SLO: hot path p50 < 100 ms, p99 < 500 ms; spool p99 < 1 s. The system separates its
+own processing latency from source/polling publication lag.
 
-MacroRSS records network, parse, hot-path, spool, source-lag and MySQL-flush measurements.
-The initial internal SLO is:
+## Deployment
 
-- hot path p50 < 100 ms;
-- hot path p99 < 500 ms;
-- spool p99 < 1 s.
+Two options depending on the host:
 
-The system distinguishes its own processing latency from source/polling publication lag.
+- **Production host (`/opt`, hardened):** `deploy/install-systemd.sh` installs a dedicated
+  unprivileged user, `/opt/macrorss`, `EnvironmentFile=/etc/macrorss/macrorss.env`, and a unit
+  with `Restart=always`, journald logging and filesystem hardening. Requires root.
+- **Workstation (`systemd --user`):** run as your own user from a checkout, with
+  `loginctl enable-linger` so it starts at boot without a login session. No root required;
+  fewer OS-level hardening guarantees than `/opt`.
 
-## Production deployment
+See `doc/operacion.md` for operations (adding a feed, replaying the spool, backup/restore) and
+`doc/architecture.md` for the component model.
 
-See `doc/operacion.md` and `deploy/macrorss.service`. The service is configured with
-`Restart=always`, journald logging, a dedicated unprivileged user and filesystem hardening.
+## Durability
+
+The historical store runs on a shared MySQL server that may set
+`innodb_flush_log_at_trx_commit` to 0 or 2 (faster, but up to ~1 s of transactions lost on
+crash) — outside our control. The **local append-only spool with per-batch fsync is therefore
+the primary durability guarantee**: the fetcher never blocks on the DB, records survive a
+process kill or power loss, and a flusher replays them idempotently once MySQL is reachable.
 
 ## Design
 
-The full rationale, phases, gates and failure model are in [`PLAN.md`](PLAN.md).
+Full rationale, phases, acceptance gates and failure model: [`PLAN.md`](PLAN.md).
+Per-phase implementation status: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md).
 
 ## License
 
-MIT.
+MIT — see [`LICENSE`](LICENSE).
