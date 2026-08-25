@@ -1,18 +1,19 @@
 # MacroRSS implementation status
 
-This file separates **implemented code** from **environmental validation that must run on the
-production host/LAN**.
+This file separates **implemented code**, **validated live behavior**, and **host-local operational
+state**. The repository can prove code, tests and recorded smoke validations; whether a daemon is
+running at this instant is authoritative only on the deployment host (`systemctl` + runtime metrics).
 
-## F0 — Foundations and contracts: IMPLEMENTED
+## F0 — Foundations and contracts: IMPLEMENTED + CI VALIDATED
 
 - validated source/config loader;
 - explicit multi-transport source schema;
-- core dataclasses;
-- JSON logging;
+- core dataclasses and JSON logging;
 - MySQL schema and env-only credentials;
-- `check-config` / `check-db`.
+- `check-config` / `check-db`;
+- strict mypy is enforced in CI.
 
-## F1 — Low-latency vertical slice: IMPLEMENTED
+## F1 — Low-latency vertical slice: IMPLEMENTED + VALIDATED
 
 - async HTTP keep-alive/HTTP2;
 - RSS/Atom parsing;
@@ -23,41 +24,50 @@ production host/LAN**.
 - restart-safe recent dedup seed;
 - latency metrics.
 
-Local unit suite validates the pipeline components. CI includes a real MySQL 8 service test for
-schema/upsert/replay idempotence.
+CI exercises MySQL 8 schema/upsert/replay idempotence. Live DB testing also exercised the spool
+failure boundary: a deliberately broken SQL upsert caused every DB flush to fail while records
+remained retained for replay rather than being lost.
 
 ## F2 — Adaptive scheduler: IMPLEMENTED
 
 - source-specific base policy;
 - pre/burst/post windows;
-- current high-impact UTC event calendar;
+- high-impact UTC event calendar;
 - conditional GET;
 - jitter outside burst;
 - exponential per-source backoff and circuit breaker.
 
 ## F3 — Multi-source expansion: IMPLEMENTED FOR VALIDATED CHANNELS
 
-18 sources are enabled. Treasury direct HTML monitoring is implemented in addition to Federal
-Register. Six catalog entries remain deliberately disabled until a robust official adapter is
-validated; enabling an unverified scraper would violate the source-quality gate.
+24 sources are catalogued and 18 are enabled. Live endpoint debugging found and fixed three
+important silent-failure modes:
 
-## F4 — Resilience / chaos: CODE + AUTOMATED FIXTURES IMPLEMENTED
+- BLS dashboard releases now use content-aware document identity instead of a constant link;
+- Treasury direct HTML parsing excludes navigation links and captures release slugs;
+- Federal Register sources use the documented JSON API instead of RSS endpoints redirected to an
+  anti-bot wall.
 
-Automated tests cover torn final spool records, replay readability and cross-source deterministic
-dedup. `scripts/chaos-checklist.sh` defines destructive host/network/MySQL tests.
+Six catalog entries remain deliberately disabled until a robust official adapter is validated.
 
-**Production-host destructive chaos execution remains environmental validation** because it
-requires control of the target Ubuntu host, its network and MySQL service.
+## F4 — Resilience / chaos: AUTOMATED COVERAGE IMPLEMENTED
+
+Automated tests cover torn final spool records, replay readability, idempotent persistence and
+cross-source deterministic dedup. `scripts/chaos-checklist.sh` defines destructive host/network/
+MySQL tests.
+
+Destructive power/network/reboot drills are host-level operational validation and should not be
+represented as complete unless their results are explicitly recorded.
 
 ## F5 — systemd operations: IMPLEMENTED
 
-- hardened unit;
-- install helper;
+- hardened system service and install helper;
+- documented `systemd --user` alternative;
 - status/sources/tail/spool/replay CLI;
 - journald logging;
-- chrony/NTP documented prerequisite.
+- chrony/NTP prerequisite.
 
-Actual reboot validation must run on the deployment host.
+Use `systemctl status macrorss` or `systemctl --user status macrorss` on the target host for current
+service liveness; GitHub cannot establish that runtime fact by itself.
 
 ## F6 — Trading outputs: IMPLEMENTED
 
@@ -81,23 +91,43 @@ Actual reboot validation must run on the deployment host.
 - cross-source race counters;
 - optional external heartbeat.
 
-Long-horizon "silent source" thresholds are intentionally not hard-coded globally because normal
-publication cadence differs substantially by institution; this should be calibrated from observed
-history rather than guessed.
+Long-horizon silent-source thresholds remain source-specific and should be calibrated from observed
+history rather than guessed globally.
 
 ## F8 — Hardening/docs: IMPLEMENTED
 
-- unit fixtures/tests;
+- unit/regression fixtures;
 - MySQL integration CI;
+- strict mypy CI gate;
 - operations and architecture docs;
 - contributor invariants;
 - chaos checklist;
 - schema/replay instructions.
 
-## Validation executed in the implementation environment
+## Recorded validation
 
-- `pytest`: PASS (25 tests + MySQL integration test skipped locally when no MySQL service exists);
+### Live environment
+
+Recorded in merged production-debug changes:
+
+- real backend: MySQL 8.0.42 at `172.16.0.41`, reached through ProxySQL `6033`;
+- 45-second daemon smoke run: 341 raw items ingested from 18/18 enabled sources with zero errors;
+- after the MySQL upsert fix: zero deprecation warnings, zero errors and zero deferred flushes;
+- idempotent re-run left counts unchanged at 341 `raw_items`, 332 `events`, 18 `feed_state` rows;
+- live source checks confirmed BLS content dedup, Treasury release filtering and Federal Register
+  JSON API behavior.
+
+### GitHub CI (`main`)
+
+Latest recorded gate:
+
+- schema application against MySQL 8.4: PASS;
+- `ruff check .`: PASS;
+- `mypy macrorss`: PASS (24 source files);
 - `python -m compileall -q macrorss tests`: PASS;
-- `python -m macrorss check-config`: PASS (24 sources, 18 enabled, 24 scheduled events).
+- `pytest --cov=macrorss --cov-report=term-missing`: **30 PASS**, 56% aggregate coverage;
+- `macrorss check-config`: PASS (24 sources, 18 enabled; RSS 16 / HTML 6 / JSON 2; 24 scheduled events);
+- `macrorss check-db`: PASS.
 
-GitHub CI is the authoritative environment for `ruff` and the real MySQL 8 integration test.
+The remaining operational distinction is intentional: repository validation and live smoke tests are
+recorded here, while the **current** running/stopped state of a deployed service belongs to the host.
