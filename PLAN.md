@@ -1,109 +1,567 @@
-# Plan de trabajo: Sistema robusto de recolección de noticias macro
+# Plan de trabajo: MacroRSS — low-latency macro event collector
 
 ## Objetivo
 
-Recolectar noticias de las 17 fuentes habilitadas en `config/feeds.yaml` con **mínimo delay** y **máxima resiliencia** (reinicios, cortes de luz, caídas de internet), sobre Ubuntu.
+Construir un sistema robusto de **detección de eventos macroeconómicos de alto impacto para XAUUSD y Forex**, usando las fuentes de primera mano definidas en `config/feeds.yaml`, con dos objetivos simultáneos:
+
+1. **mínima latencia de detección** para eventos market-moving;
+2. **cero pérdida y operación resiliente** ante reinicios, cortes de luz, fallos de Internet, caída de MySQL o rotura de una fuente.
+
+MacroRSS no debe diseñarse como un simple lector RSS. RSS/Atom será uno de varios mecanismos de adquisición. El núcleo debe soportar fuentes RSS, Atom, HTML, JSON/API y otros endpoints oficiales sin cambiar la arquitectura.
 
 ---
 
-## Decisiones de arquitectura (a validar antes de empezar)
+## Principios de diseño
+
+### 1. Detection-first
+
+La persistencia no debe estar en el camino crítico de una alerta.
+
+```text
+HTTP response
+     |
+     v
+   parser
+     |
+     v
+normalize + fast dedup
+     |
+     +--------------------> HOT PATH: event callback / ZMQ / webhook
+     |
+     v
+ durable local spool
+     |
+     v
+    MySQL
+```
+
+El sistema debe poder emitir un evento nuevo aunque MySQL esté temporalmente caído.
+
+### 2. Multi-source, no RSS-centric
+
+La abstracción central será `Source`, no `RSSFeed`.
+
+Cada fuente declarará como mínimo:
+
+- `transport`: `rss`, `atom`, `html`, `json`;
+- `parser`: parser genérico o específico de la institución;
+- URL/endpoints;
+- prioridad;
+- tags/mercados relevantes;
+- política de polling;
+- reglas de identificación del evento.
+
+Esto permite incorporar Treasury, CME, WGC, LBMA, MOF Japan u otras fuentes sin deformar el núcleo.
+
+### 3. Hot path y durable path separados
+
+El hot path existe para reaccionar rápido.
+
+El durable path existe para garantizar replay, auditoría e histórico.
+
+Ninguna operación MySQL, compresión, análisis pesado o notificación lenta debe bloquear el parser/fetcher.
+
+### 4. Idempotencia end-to-end
+
+Re-fetch, replay del spool, reinicio del daemon o aparición simultánea del mismo comunicado en dos canales no deben generar eventos duplicados.
+
+### 5. Medir la latencia, no asumirla
+
+Cada evento debe guardar timestamps suficientes para separar:
+
+- latencia de publicación de la fuente;
+- latencia de polling;
+- latencia de red;
+- latencia de parsing;
+- latencia del hot path;
+- latencia de persistencia.
+
+---
+
+## Decisiones de arquitectura
 
 | Decisión | Propuesta | Alternativa | Justificación |
 |---|---|---|---|
-| Almacenamiento | **MySQL en 172.16.0.41:3306** (InnoDB, utf8mb4) | SQLite local, PostgreSQL | Instalación ya existente y en LAN (RTT medido 0.18 ms). Base de datos propia `macrorss`, usuario dedicado con grants acotados — no reutilizar bases ajenas del servidor |
-| Buffer local | **Spool append-only JSONL en disco local**, flush a MySQL con reintento | Escribir directo a MySQL | **Obligatorio**: el store dejó de ser local, así que si .41 o la LAN caen el daemon perdería lo ya descargado. El spool absorbe la caída; `fsync` por lote da durabilidad ante corte de luz. No se usa SQLite como buffer por decisión explícita |
-| Cola de procesamiento | **Sin cola externa**: spool local → MySQL con dedup idempotente | Redis/RabbitMQ | Menos piezas que se rompen. El par (spool, tabla `items`) actúa como cola |
-| Polling | **GET condicional** (ETag + Last-Modified) con intervalos por feed | Intervalo fijo global | Los .gov soportan cache headers: baja latencia sin baneos |
-| Ejecución | **Un solo proceso daemon** en Python con scheduler async (asyncio) | cron + script | cron pierde eventos si la máquina estaba apagada; el daemon recupera al arrancar |
-| Servicio | **systemd** con `Restart=always` + arranque en boot | supervisor, docker | Nativo de Ubuntu, sin dependencias extra |
-| Notificación de noticias nuevas | **Fase 2**: webhook/Telegram/stdout estructurado | — | Primero recolectar confiable, después notificar rápido |
-| Reloj del sistema | **chrony/NTP** obligatorio | — | Los timestamps de los feeds son inútiles si el reloj local drift tras un corte de luz (RTC sin batería) |
+| Modelo de adquisición | **Source adapters multi-transport** | RSS-only | Treasury y otras fuentes críticas no tienen RSS suficiente; el sistema debe soportar HTML/JSON/API sin rehacer el core |
+| Ejecución | **Un daemon asyncio** con tareas independientes | cron + scripts | Scheduler fino, conexiones persistentes, polling adaptativo y menor overhead |
+| HTTP | **httpx async**, keep-alive y HTTP/2 cuando aplique | requests/aiohttp | Pool de conexiones, timeouts explícitos y buena integración async |
+| Polling | **Adaptativo por fuente y por ventana de evento** | intervalo fijo | Minimiza delay en CPI/NFP/FOMC sin bombardear servidores 24/7 |
+| Hot path | **Callback/event bus local no bloqueante** | esperar DB antes de emitir | MySQL no debe agregar latencia ni bloquear detección |
+| Buffer durable | **Spool local segmentado append-only + fsync + rename atómico** | JSONL único | Replay y recuperación de power-loss más simples y verificables |
+| Almacenamiento | **MySQL 172.16.0.41:3306**, InnoDB, utf8mb4 | SQLite/PostgreSQL | Infra existente, RTT LAN bajo, histórico centralizado |
+| Cola externa | **No inicialmente** | Redis/RabbitMQ/Kafka | ~20-30 fuentes no justifican complejidad; hot path + spool cubren el caso |
+| Dedup documental | `source_id + guid_hash` | URL cruda | Idempotencia dentro de una fuente |
+| Dedup cross-source | `event_fingerprint` + canonicalización | sólo dedup por feed | Evita dos alertas para el mismo FOMC/press release observado en canales distintos |
+| Servicio | **systemd**, `Restart=always` | Docker/supervisor | Nativo de Ubuntu y simple de operar |
+| Reloj | **chrony/NTP obligatorio** | reloj local sin control | La medición de latencia depende de timestamps confiables |
+
+---
+
+## Modelo conceptual
+
+### Source
+
+Representa un canal oficial observable.
+
+Ejemplos:
+
+```yaml
+- id: fed-monetary
+  transport: rss
+  parser: feed
+  url: https://www.federalreserve.gov/feeds/press_monetary.xml
+
+- id: treasury-press
+  transport: html
+  parser: treasury_press
+  url: https://home.treasury.gov/news/press-releases
+```
+
+Una institución puede tener múltiples `Source` redundantes.
+
+### RawItem
+
+Captura exacta del documento observado:
+
+- `source_id`
+- `guid`
+- `guid_hash`
+- `url`
+- `title`
+- `raw_published_at`
+- `first_seen_at`
+- payload/raw metadata necesarios para auditoría
+
+### NormalizedEvent
+
+Representa el evento económico, no el canal que lo publicó:
+
+- `event_id`
+- `event_fingerprint`
+- `canonical_url`
+- `canonical_title`
+- `institution`
+- `event_type`
+- `published_at`
+- `first_seen_at`
+- `first_source_id`
+- `tags`
+- `rank_gold`
+- `rank_fx`
+- referencias a todos los `RawItem` que lo observaron
+
+Así, un mismo FOMC statement detectado en `fed-monetary` y `fed-press-all` produce dos observaciones pero **un solo evento**.
+
+---
+
+## Latency accounting
+
+Registrar monotonic clock para mediciones internas y UTC wall clock para auditoría.
+
+Timestamps mínimos:
+
+- `request_started_mono`
+- `response_received_mono`
+- `parsed_mono`
+- `event_emitted_mono`
+- `spooled_mono`
+- `persisted_mono`
+- `first_seen_at_utc`
+- `published_at_utc` cuando la fuente lo provea
+
+Métricas derivadas:
+
+```text
+network_fetch_ms = response_received - request_started
+parse_ms         = parsed - response_received
+hot_path_ms      = event_emitted - response_received
+spool_ms         = spooled - response_received
+persist_ms       = persisted - response_received
+source_lag       = first_seen_at_utc - published_at_utc
+```
+
+`source_lag` mezcla retraso de publicación y polling; por eso debe analizarse junto al calendario de requests.
+
+### SLO inicial del pipeline propio
+
+Para payloads pequeños y fuentes normales:
+
+- `hot_path_ms p50 < 100 ms`
+- `hot_path_ms p99 < 500 ms`
+- `spool_ms p99 < 1 s`
+
+No usar `<90 s` como métrica del pipeline interno. Decenas de segundos sólo son aceptables cuando provienen del intervalo de polling o del propio proveedor.
+
+---
+
+## Polling adaptativo
+
+Cada `Source` tendrá una política base y podrá entrar en ventanas de alta prioridad.
+
+Ejemplo para una publicación conocida a `T0`:
+
+```text
+fuera de ventana:       30-60 s
+T0 - 5 min a T0 - 30 s: 5 s
+T0 - 30 s a T0 + 2 min: 1 s
+T0 + 2 min a T0 + 10 m: 5 s
+luego:                  volver a base
+```
+
+Los valores deben ser configurables por fuente y respetar comportamiento/rate limits del servidor.
+
+### Eventos programados iniciales
+
+Integrar un calendario operativo mínimo para:
+
+- CPI
+- NFP / Employment Situation
+- PPI
+- JOLTS cuando corresponda
+- GDP
+- PCE / Core PCE
+- FOMC rate decisions/statements
+- principales decisiones ECB/BoE/BoJ/SNB
+
+No hace falta un calendario económico completo en la primera fase: sólo las ventanas que justifican polling agresivo.
+
+### Conditional GET
+
+Usar siempre que el servidor lo soporte:
+
+- `If-None-Match` / `ETag`
+- `If-Modified-Since` / `Last-Modified`
+
+Un `304 Not Modified` debe ser la ruta normal y barata del polling frecuente.
+
+---
+
+## Spool durable segmentado
+
+No usar un único JSONL infinito.
+
+Estructura propuesta:
+
+```text
+spool/
+  000000000001.open
+  000000000002.ready
+  000000000003.ready
+```
+
+### Escritura
+
+1. append de records al segmento `.open`;
+2. flush de userspace buffers;
+3. `fsync(fd)` según política de lote/latencia;
+4. al cerrar segmento, `fsync` y `rename()` atómico `.open -> .ready`;
+5. `fsync` del directorio cuando sea necesario para durabilidad estricta.
+
+### Flush a MySQL
+
+1. leer segmento `.ready`;
+2. insertar en transacción idempotente;
+3. `COMMIT`;
+4. marcar/eliminar segmento sólo después del commit confirmado.
+
+### Power loss
+
+Al iniciar:
+
+- validar el último `.open`;
+- ignorar/truncar sólo el último record parcial si existe;
+- replayar todos los `.ready`;
+- nunca descartar un record válido por no saber si llegó previamente a MySQL: el store debe ser idempotente.
+
+### Rotación
+
+Segmentar por tamaño o tiempo, por ejemplo 1-10 MB o pocos minutos. El valor final se medirá; el volumen del proyecto es pequeño.
+
+---
+
+## MySQL
+
+MySQL opera como histórico, estado durable central y fuente para análisis; no como requisito del hot path.
+
+### Conexión
+
+Variables de entorno solamente:
+
+- `MACRORSS_DB_HOST`
+- `MACRORSS_DB_PORT`
+- `MACRORSS_DB_USER`
+- `MACRORSS_DB_PASSWORD`
+- `MACRORSS_DB_NAME`
+
+Cero credenciales en git.
+
+Usar pool async con comprobación/reconexión de conexiones stale; fijar sesión UTC.
+
+### Timestamps
+
+Usar `DATETIME(6)` UTC, no `TIMESTAMP`.
+
+### Dedup documental
+
+`guid_hash BINARY(32)` = SHA-256 de GUID/canonical URL/fallback estable.
+
+Índice único mínimo:
+
+```text
+UNIQUE(source_id, guid_hash)
+```
+
+No indexar GUIDs/URLs largas directamente.
+
+### Dedup de eventos
+
+Mantener una tabla/relación separada para eventos normalizados.
+
+El fingerprint inicial puede construirse a partir de:
+
+- institución;
+- canonical URL;
+- título normalizado;
+- timestamp aproximado;
+- tipo de evento.
+
+No utilizar fuzzy matching costoso en el hot path inicial. Primero reglas deterministas rápidas; enriquecimiento posterior puede unir casos ambiguos.
+
+---
+
+## Hot path
+
+La primera implementación debe incluir un dispatcher local desde Fase 1, aunque todavía no exista Telegram.
+
+Interfaz conceptual:
+
+```python
+async def on_new_event(event: NormalizedEvent) -> None:
+    ...
+```
+
+La llamada no debe bloquear fetching ni parsing. Los consumidores lentos deben recibir mediante una cola local acotada o tareas desacopladas.
+
+### Salidas previstas
+
+En orden de prioridad:
+
+1. stdout JSON estructurado para validación;
+2. ZeroMQ local/LAN para integración rápida con trading systems;
+3. webhook HTTP;
+4. Telegram para supervisión humana.
+
+Telegram no es adecuado como transporte principal de una estrategia automática.
 
 ---
 
 ## Fases
 
-### Fase 0 — Fundaciones del repo (0.5 día)
+### Fase 0 — Fundaciones y contratos
 
-- Estructura de paquete: `macrorss/config.py`, `fetcher.py`, `store.py`, `spool.py`, `daemon.py`, `models.py`.
-- Loader validado de `config/feeds.yaml` (schema check con pydantic o validación manual).
-- Logging estructurado (JSON, niveles, rotación vía journald).
-- Dependencias mínimas: `httpx` (async + HTTP/2), `feedparser`, `pyyaml`, `asyncmy` (driver MySQL async; alternativa `aiomysql`).
-- **Conexión a MySQL solo por variables de entorno** (`MACRORSS_DB_HOST/PORT/USER/PASSWORD/NAME`), leídas de `.env` fuera de git. El repo es público: cero credenciales versionadas.
-- Migración inicial `deploy/schema.sql`: `CREATE DATABASE macrorss CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci` + usuario dedicado con `SELECT,INSERT,UPDATE` acotado a esa base.
-- **Criterio de aceptación:** `macrorss --check-config` valida los 23 feeds del catálogo y reporta errores con mensajes claros; `macrorss --check-db` conecta a .41, verifica el schema y falla con mensaje accionable si no hay credenciales.
+Crear:
 
-### Fase 1 — MVP funcional: fetch + store (1-2 días)
+```text
+macrorss/
+  config.py
+  models.py
+  sources/
+    base.py
+    feed.py
+  fetcher.py
+  normalizer.py
+  dedup.py
+  dispatcher.py
+  spool.py
+  store.py
+  scheduler.py
+  daemon.py
+```
 
-- Fetcher async con:
-  - GET condicional (ETag/If-Modified-Since) por feed.
-  - User-Agent de navegador (crítico para BLS, ya verificado que da 403 sin él).
-  - Intervalos configurables por feed (Fed/BLS: 30-60s en ventana de datos; CFTC/SEC: 5-15 min).
-- Spool local append-only (JSONL + `fsync` por lote): el fetcher escribe ahí primero y recién después flushea a MySQL. Un item confirmado en spool no se pierde aunque .41 esté caído.
-- Store MySQL (InnoDB, `utf8mb4`):
-  - Tabla `items` con dedup por índice único `(feed_id, guid_hash)`, donde `guid_hash` es `BINARY(32)` = SHA-256 del guid — **no indexar el guid crudo**: son URLs largas y InnoDB limita la clave a 3072 bytes. Fallback a hash de `(title, link, published)` cuando el feed no trae guid.
-  - Tabla `feed_state`: ETag, Last-Modified, último fetch exitoso, contador de errores consecutivos.
-  - Inserts idempotentes con `INSERT ... ON DUPLICATE KEY UPDATE` (no existe `INSERT OR IGNORE` en MySQL; `INSERT IGNORE` sirve pero silencia también otros errores) → re-procesar nunca duplica.
-  - Timestamps en `DATETIME(6)` UTC, **no `TIMESTAMP`** (límite 2038 y conversión implícita de zona). Sesión fijada con `time_zone='+00:00'`.
-  - Pool de conexiones con *pre-ping*: el `wait_timeout` del servidor mata conexiones ociosas y el daemon pasa horas sin escribir en feeds lentos.
-- Normalización de timestamps a UTC (feedparser entrega formatos inconsistentes).
-- **Criterio de aceptación:** corriendo 24h, recolecta items de los feeds operativos sin duplicados y con delay medido < 90s para feeds prioritarios.
+Tareas:
 
-### Fase 2 — Resiliencia a fallos (1-2 días)
+- loader validado de `config/feeds.yaml`;
+- extender schema para `transport`, `parser`, políticas de polling y prioridad;
+- dataclasses/pydantic models para `Source`, `RawItem`, `NormalizedEvent`;
+- logging JSON estructurado;
+- dependencias mínimas: `httpx`, `feedparser`, `pyyaml`, `asyncmy` y validación elegida;
+- `macrorss --check-config`;
+- `macrorss --check-db`;
+- `deploy/schema.sql`.
 
-- **Cortes de internet:** detección de fallo de red vs. fallo de feed (distinguir timeout global de HTTP 500 puntual). Backoff exponencial con jitter por feed; al recuperarse la conexión, re-fetch inmediato de todo y recuperación de items perdidos (los RSS sirven histórico, así que no se pierde nada: se atrasa).
-- **Cortes de luz / reinicios:** ningún estado crítico solo en memoria. El spool local se escribe con `fsync` por lote (sobrevive al corte); en MySQL la durabilidad depende de `innodb_flush_log_at_trx_commit=1` — **verificar su valor en .41, es un servidor compartido y puede no estar bajo nuestro control**. Al arrancar, el daemon replaya el spool pendiente y reanuda desde `feed_state` sin reprocesar.
-- **Feeds que se rompen:** circuit breaker por feed (tras N errores consecutivos, backoff largo + alerta, sin tumbar el daemon).
-- **Caída de .41 o de la LAN:** el fetcher NO se detiene — sigue descargando y acumulando en el spool; un flusher independiente reintenta con backoff. Alerta si el spool supera un umbral de tamaño o antigüedad.
-- **Criterio de aceptación (test de caos):**
-  1. `kill -9` al daemon en medio de un fetch → al reiniciar, cero duplicados y cero pérdida.
-  2. Cortar red 30 min → al restaurar, recupera todos los items publicados en el corte.
-  3. Apagar la máquina 1 hora → al boot, el servicio arranca solo y recupera lo publicado.
-  4. **Detener MySQL en .41 durante 30 min** (o bloquear 3306 con firewall) → el fetcher sigue trabajando, el spool crece, y al restaurar se vuelca todo sin duplicados ni pérdida.
+**Gate F0:** todos los sources configuran correctamente; DB schema verificable; ningún secreto versionado.
 
-### Fase 3 — Servicio systemd + operación (0.5-1 día)
+### Fase 1 — Vertical slice low-latency
 
-- Unit file: `Restart=always`, `RestartSec=5`, arranque tras `network-online.target`, límites de memoria, usuario dedicado sin privilegios.
-- Logs a journald con prioridades; logrotate si se escribe a archivo.
-- Configuración de **chrony** para sincronización de reloj (documentar, es prerequisito del sistema).
-- Comandos CLI de operación: `macrorss status` (último fetch por feed, errores), `macrorss tail --tag gold`.
-- **Criterio de aceptación:** `systemctl enable --now macrorss` sobrevive a `sudo reboot` sin intervención.
+Implementar primero sólo fuentes prioritarias:
 
-### Fase 4 — Notificación con bajo delay (1 día, opcional pero recomendado)
+- Fed monetary
+- Fed all press
+- BLS
+- BEA
+- ECB MID
 
-- Dispatcher de items nuevos: al insertar un item con `rank_gold/fx <= 5`, disparar notificación inmediata (Telegram bot / webhook / desktop notification — a definir).
-- Filtrado por tags y keywords (ej. "CPI", "FOMC", "rate decision") para no ahogarse en ruido.
-- Persistencia de "ya notificado" como columna/tabla en MySQL → un reinicio no re-notifica. Marcar con `UPDATE ... WHERE notified_at IS NULL` para que sea idempotente ante dos instancias.
+Pipeline completo:
 
-### Fase 5 — Monitoreo y alertas del propio sistema (0.5-1 día)
+```text
+fetch -> parse -> normalize -> fast dedup -> emit -> spool -> MySQL
+```
 
-- Heartbeat externo (healthchecks.io o similar): si el daemon no reporta en X min → alerta (cubre cortes de luz/internet totales, donde el propio sistema no puede avisar).
-- Métricas internas: lag por feed (published_at vs fetched_at), tasa de errores, items/día.
-- Alerta si un feed prioritario no publica en tiempo inusual (¿feed roto o silencio real? — detectar cambio de URL como el que ocurrió con Treasury).
+Incluir desde el comienzo medición de todos los timestamps de latencia.
 
-### Fase 6 — Endurecimiento y docs (0.5 día)
+**Gate F1:**
 
-- Suite de tests: unitarios (parsing, dedup, normalización) + los 3 tests de caos de Fase 2 automatizados en CI o script.
-- `doc/operacion.md`: cómo agregar un feed, cómo purgar/replayar el spool a mano, backup y restore de la base MySQL (`mysqldump --single-transaction`), qué revisar si no llegan noticias.
-- Actualizar `AGENTS.md` con arquitectura y convenciones.
+- detección y persistencia funcional;
+- reiniciar no duplica;
+- Fed duplicado entre feeds produce un solo `NormalizedEvent`;
+- `hot_path_ms p99 < 500 ms` en pruebas locales;
+- MySQL desconectado no impide emitir y spoolar eventos.
+
+### Fase 2 — Scheduler adaptativo
+
+- políticas base por source;
+- event windows;
+- conditional GET;
+- jitter fuera de ventanas críticas para evitar sincronización innecesaria;
+- re-fetch inmediato tras recuperación de conectividad;
+- configuración especial para BLS/servidores con restricciones.
+
+**Gate F2:** reproducir una ventana simulada de CPI/FOMC y verificar transición automática `normal -> burst -> normal` sin duplicados ni runaway polling.
+
+### Fase 3 — Expansión multi-source
+
+Agregar el resto de feeds operativos y comenzar adapters no-RSS prioritarios.
+
+Prioridad especial:
+
+1. **Treasury press / debt / refunding / buybacks**: no aceptar Federal Register como sustituto completo;
+2. Presidential Documents / Federal Register;
+3. BoE, BoJ, SNB, BoC, BIS;
+4. CFTC/SEC;
+5. después CME/WGC/LBMA/MOF cuando haya método oficial robusto.
+
+**Gate F3:** catálogo operativo con health status por source y cobertura explícita de canales que hoy están sin RSS.
+
+### Fase 4 — Resiliencia y chaos testing
+
+Casos obligatorios:
+
+1. `kill -9` durante fetch;
+2. `kill -9` durante escritura de spool;
+3. corte de Internet 30 min;
+4. reboot de la máquina;
+5. caída/bloqueo de MySQL 30 min;
+6. último record del segmento parcialmente escrito;
+7. replay deliberado dos veces del mismo spool;
+8. dos sources publican el mismo evento con segundos de diferencia.
+
+**Gate F4:** cero pérdida de records confirmados y cero alertas duplicadas para eventos identificados determinísticamente.
+
+### Fase 5 — Operación systemd
+
+- usuario dedicado sin privilegios;
+- `Restart=always`;
+- `RestartSec=5`;
+- `After=network-online.target`;
+- límites razonables de memoria/files;
+- chrony documentado como prerequisito;
+- journald;
+- CLI:
+  - `macrorss status`
+  - `macrorss sources`
+  - `macrorss tail --tag gold`
+  - `macrorss spool-status`
+
+**Gate F5:** reboot completo y recuperación automática sin intervención.
+
+### Fase 6 — Output trading / notifications
+
+- ZeroMQ publisher para integración automática;
+- webhook;
+- Telegram opcional para humano;
+- filtros por mercado, ranking y event type;
+- persistir estado de delivery cuando corresponda;
+- consumidores idempotentes.
+
+**Gate F6:** evento de prueba llega a consumidor automático sin esperar persistencia MySQL.
+
+### Fase 7 — Observabilidad y source intelligence
+
+Métricas:
+
+- requests/source/min;
+- HTTP status distribution;
+- `304` ratio;
+- fetch latency;
+- parsing latency;
+- hot-path latency;
+- source lag;
+- items/source/day;
+- consecutive errors;
+- spool bytes/age;
+- MySQL flush lag;
+- cross-source detection race: qué canal vio primero cada evento.
+
+Esta última métrica es estratégica: después de varias semanas sabremos empíricamente si RSS, HTML o determinado endpoint gana para Fed/Treasury/ECB.
+
+Alertas:
+
+- daemon muerto;
+- source prioritario con errores;
+- source silencioso anormalmente;
+- spool demasiado grande/viejo;
+- MySQL unreachable;
+- reloj/NTP fuera de tolerancia.
+
+### Fase 8 — Hardening y documentación
+
+- unit tests de parsers/normalización/fingerprints;
+- fixtures reales sanitizados de fuentes;
+- integration tests;
+- chaos suite reproducible;
+- `doc/operacion.md`;
+- documentación de agregar Source/adapter;
+- backup/restore MySQL;
+- purga/replay manual del spool;
+- arquitectura en `AGENTS.md`.
 
 ---
 
-## Orden y dependencias
+## Orden de implementación
 
+```text
+F0 -> F1 -> F2 -> F3 -> F4 -> F5 -> [F6 || F7] -> F8
 ```
-Fase 0 → Fase 1 → Fase 2 → Fase 3 → [Fase 4 ∥ Fase 5] → Fase 6
-```
 
-Fases 4 y 5 son independientes entre sí y pueden paralelizarse u omitirse temporalmente (el sistema ya es útil al cierre de Fase 3).
+La primera meta no es soportar 23 fuentes. La primera meta es demostrar un **vertical slice extremadamente confiable y rápido** con Fed/BLS/BEA/ECB; después escalar el catálogo.
 
-## Riesgos principales identificados de antemano
+---
 
-1. **BLS y sitios .gov con anti-bot**: mitigado con UA de navegador (verificado), pero puede escalar a bloqueo por IP si el polling es agresivo → intervalos mínimos razonables (30-60s, no 5s).
-2. **RSS sirve histórico limitado**: si la máquina está apagada más tiempo del que el feed retiene items (típicamente 10-50 items), esos items se pierden para siempre. Es un límite inherente de RSS; la mitigación es el heartbeat externo para enterarse rápido del corte.
-3. **Feeds que cambian de URL sin aviso** (caso Treasury): el circuit breaker + alerta de "feed silencioso" de Fase 5 lo detecta, pero la corrección es manual.
-4. **El store dejó de ser local (.41 es un punto único de fallo nuevo)**: si el servidor se cae, se llena el disco o alguien reinicia MySQL, el daemon ya no puede persistir. Mitigado con el spool local + flusher con reintento, pero el spool tiene un techo de disco: hay que alertar antes de llenarlo. Es un servidor **compartido**, así que su carga y sus reinicios no los controlamos nosotros.
-5. **Durabilidad no controlada por nosotros**: `innodb_flush_log_at_trx_commit` en .41 puede estar en 0 o 2 (más rápido, pierde hasta 1s de transacciones ante crash). Verificarlo; si no se puede cambiar, el spool local es la única garantía real.
-6. **Reloj del sistema tras corte de luz**: si el RTC pierde hora y NTP tarda en sincronizar, los delays medidos serán falsos → chrony es prerequisito, no opcional.
+## Riesgos principales
 
-**Estimación total: 6-8 días de trabajo** (+0.5-1 día vs. el plan con SQLite: schema/migración MySQL, spool local y el test de caos de caída de .41).
+1. **Source publication lag**: MacroRSS no puede detectar un comunicado antes de que el endpoint observado lo publique. Por eso se deben comparar múltiples canales oficiales y medir quién gana.
+2. **Rate limiting / anti-bot**: polling agresivo puede producir 403/429 o bloqueo. Burst polling sólo alrededor de releases conocidos y condicionado por comportamiento real de cada servidor.
+3. **Treasury incompleto vía Federal Register**: Federal Register cubre regulatory/OFAC pero no sustituye necesariamente press releases, auctions, quarterly refunding o buybacks. Requiere adapter directo.
+4. **RSS histórico limitado**: outages largos pueden superar la retención. Fuentes HTML/API redundantes ayudan pero no eliminan completamente el riesgo.
+5. **MySQL `.41` es SPOF del histórico central**: mitigado para captura mediante spool, pero no para consultas históricas durante la caída.
+6. **Durabilidad MySQL no totalmente controlada**: verificar `innodb_flush_log_at_trx_commit`; el spool local es la garantía primaria de captura.
+7. **Cross-source dedup ambiguo**: fingerprints demasiado agresivos pueden fusionar documentos distintos; demasiado conservadores pueden duplicar alertas. Empezar determinista y auditable.
+8. **Clock correctness**: NTP/chrony y monotonic clock son obligatorios para interpretar métricas de latencia.
+9. **Hot-path backpressure**: un consumidor lento no puede bloquear el collector; las colas deben ser acotadas y observables.
+10. **HTML adapters frágiles**: cualquier scraper debe tener fixtures, tests y alertas de cambio estructural.
+
+---
+
+## Criterio de éxito del proyecto
+
+MacroRSS se considera exitoso cuando puede demostrar, con datos medidos y no sólo por diseño, que:
+
+1. detecta eventos prioritarios de fuentes oficiales con una latencia dominada por el source/polling y no por procesamiento interno;
+2. su hot path agrega menos de 500 ms p99 en condiciones normales;
+3. continúa capturando durante caída de MySQL;
+4. sobrevive a reboot/power-loss sin perder records confirmados;
+5. no genera alertas duplicadas cuando el mismo evento aparece en varios canales conocidos;
+6. permite determinar empíricamente qué source/channel detecta primero cada clase de evento;
+7. puede incorporar una fuente HTML/JSON nueva sin modificar el núcleo del scheduler/store.
+
+El objetivo final no es "leer RSS rápido". Es construir un **macro event sensor auditable, resiliente y de baja latencia para Gold y FX**.
