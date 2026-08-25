@@ -13,9 +13,32 @@ from typing import Any
 from macrorss.models import RawItem, SourceConfig, utcnow
 
 
-def _stable_guid(source_id: str, guid: str | None, link: str | None, title: str, published: str | None) -> str:
+def _stable_guid(
+    source_id: str,
+    guid: str | None,
+    link: str | None,
+    title: str,
+    published: str | None,
+    content: str | None = None,
+) -> str:
+    """Fingerprint for document-level dedup.
+
+    ``content`` must be supplied only for dashboard-style feeds (``dedup: content``),
+    where a single item with a constant guid is rewritten in place on every release.
+    For those, guid alone is not an identity: it never changes, so every update after
+    the first would be discarded as a duplicate.  Feeds that publish one item per
+    release must keep guid-only identity, otherwise an edited headline would be
+    re-emitted as a new event.
+    """
+    del source_id  # dedup is keyed on (source_id, guid_hash) by the caller.
     identity = guid or link or "\x1f".join((title, published or ""))
+    if content is not None:
+        identity = "\x1f".join((identity, hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()))
     return hashlib.sha256(identity.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _content_dedup(source: SourceConfig) -> bool:
+    return str(source.parser_options.get("dedup", "guid")).lower() == "content"
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -57,6 +80,7 @@ class FeedSourceParser:
         parsed = feedparser.parse(body)
         result: list[RawItem] = []
         first_seen = utcnow()
+        content_dedup = _content_dedup(source)
         for entry in parsed.entries:
             title = _entry_value(entry, "title") or ""
             link = _entry_value(entry, "link")
@@ -70,17 +94,20 @@ class FeedSourceParser:
                         published_at = datetime.fromtimestamp(calendar.timegm(struct), tz=UTC)
                     except (TypeError, ValueError, OverflowError):
                         published_at = None
+            summary = _entry_value(entry, "summary")
             result.append(
                 RawItem(
                     source_id=source.id,
                     guid=guid,
-                    guid_hash=_stable_guid(source.id, guid, link, title, raw_published),
+                    guid_hash=_stable_guid(
+                        source.id, guid, link, title, raw_published, summary if content_dedup else None
+                    ),
                     url=link,
                     title=re.sub(r"\s+", " ", title).strip(),
                     raw_published_at=raw_published,
                     published_at=published_at,
                     first_seen_at=first_seen,
-                    payload={"summary": _entry_value(entry, "summary")},
+                    payload={"summary": summary},
                 )
             )
         return result
@@ -89,6 +116,7 @@ class FeedSourceParser:
         root = ET.fromstring(body)
         first_seen = utcnow()
         result: list[RawItem] = []
+        content_dedup = _content_dedup(source)
         for node in root.iter():
             local = node.tag.rsplit("}", 1)[-1].lower()
             if local not in {"item", "entry"}:
@@ -104,17 +132,20 @@ class FeedSourceParser:
                 or _first_text(fields, "published")
                 or _first_text(fields, "updated")
             )
+            summary = _first_text(fields, "description") or _first_text(fields, "summary")
             result.append(
                 RawItem(
                     source_id=source.id,
                     guid=guid or link,
-                    guid_hash=_stable_guid(source.id, guid, link, title, raw_published),
+                    guid_hash=_stable_guid(
+                        source.id, guid, link, title, raw_published, summary if content_dedup else None
+                    ),
                     url=link,
                     title=re.sub(r"\s+", " ", title).strip(),
                     raw_published_at=raw_published,
                     published_at=_parse_datetime(raw_published),
                     first_seen_at=first_seen,
-                    payload={"summary": _first_text(fields, "description") or _first_text(fields, "summary")},
+                    payload={"summary": summary},
                 )
             )
         return result

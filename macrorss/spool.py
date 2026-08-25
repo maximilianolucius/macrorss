@@ -8,6 +8,7 @@ import time
 import threading
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import IO
 
 from macrorss.codec import observation_from_json
 from macrorss.models import ObservationRecord
@@ -37,7 +38,7 @@ class SegmentedSpool:
         self.max_age_seconds = max_age_seconds
         self.fsync_every = fsync_every
         self.archive_hours = archive_hours
-        self._handle: object | None = None
+        self._handle: IO[bytes] | None = None
         self._path: Path | None = None
         self._opened_mono: float | None = None
         self._since_fsync = 0
@@ -70,10 +71,10 @@ class SegmentedSpool:
             assert self._handle is not None
             line = json.dumps(record.to_json(), ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
             # Binary/unbuffered: write enters the kernel immediately; fsync defines durability.
-            self._handle.write(line)  # type: ignore[union-attr]
+            self._handle.write(line)
             self._since_fsync += 1
             if self._since_fsync >= self.fsync_every:
-                os.fsync(self._handle.fileno())  # type: ignore[union-attr]
+                os.fsync(self._handle.fileno())
                 self._since_fsync = 0
             if self._path.stat().st_size >= self.segment_bytes:
                 sealed = self.seal()
@@ -94,8 +95,8 @@ class SegmentedSpool:
             if self._handle is None or self._path is None:
                 return None
             path = self._path
-            os.fsync(self._handle.fileno())  # type: ignore[union-attr]
-            self._handle.close()  # type: ignore[union-attr]
+            os.fsync(self._handle.fileno())
+            self._handle.close()
             ready = path.with_suffix(".ready")
             os.replace(path, ready)
             _fsync_dir(self.directory)

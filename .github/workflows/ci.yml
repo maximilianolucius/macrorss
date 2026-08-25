@@ -37,6 +37,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: python scripts/apply_schema.py
       - run: ruff check .
+      - run: mypy macrorss
       - run: python -m compileall -q macrorss tests
       - run: pytest --cov=macrorss --cov-report=term-missing
       - run: macrorss check-config

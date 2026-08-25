@@ -80,8 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, StoreUnavailable, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    # argparse.error() raises SystemExit; nothing after it is reachable.
     parser.error(f"unknown command: {args.command}")
-    return 2
 
 
 def _check_config() -> int:

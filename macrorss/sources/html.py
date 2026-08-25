@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
 from macrorss.models import RawItem, SourceConfig, utcnow
+
+
+# Real Treasury releases live at /news/press-releases/<slug>, where the slug is an
+# alphabetic prefix plus a serial number (jy2734, sb0606).  The listing page also links
+# to its own categories (readouts, statements-remarks, testimonies) and to pagination;
+# those are navigation chrome, not releases, and their URLs never change -- capturing
+# them yields items that are deduplicated away forever after the first fetch.
+_RELEASE_SLUG = re.compile(r"^[a-z]{1,4}\d{2,}$")
+
+
+def _is_release_path(path: str) -> bool:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 3 or parts[:2] != ["news", "press-releases"]:
+        return False
+    return bool(_RELEASE_SLUG.match(parts[2].lower()))
 
 
 class _TreasuryLinkParser(HTMLParser):
@@ -57,6 +73,8 @@ class TreasuryPressParser:
         for href, title in parser.links:
             url = urljoin(base_url, href)
             path = urlparse(url).path.rstrip("/")
+            if not _is_release_path(path):
+                continue
             if path in seen:
                 continue
             seen.add(path)
