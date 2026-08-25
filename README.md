@@ -9,9 +9,10 @@ deliberately **not RSS-only**: source adapters handle RSS/Atom, official HTML li
 JSON APIs behind one scheduler/store core.
 
 > **Status:** implemented end-to-end and validated against the live MySQL backend
-> (172.16.0.41 via ProxySQL). A 45 s daemon run ingested 341 items from 18/18 enabled
-> sources with zero errors. What remains is production deployment and the destructive
-> chaos drills — see [Roadmap](#roadmap).
+> (`172.16.0.41` via ProxySQL). A 45 s daemon smoke run ingested 341 items from 18/18 enabled
+> sources with zero errors, and subsequent production-debug fixes were revalidated live.
+> Current service liveness is a host-local operational fact; verify it with `systemctl` and
+> runtime metrics rather than inferring it from GitHub.
 
 ## Architecture
 
