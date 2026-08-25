@@ -1,5 +1,13 @@
--- Run as a MySQL administrator after replacing HOST and choosing the password interactively.
+-- Run as a MySQL administrator after replacing HOST and choosing a strong password.
 -- Do NOT commit a real password.
+--
+-- CREATE DATABASE IF NOT EXISTS macrorss
+--   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 -- CREATE USER 'macrorss'@'HOST' IDENTIFIED BY '<STRONG-PASSWORD>';
--- GRANT SELECT, INSERT, UPDATE ON macrorss.* TO 'macrorss'@'HOST';
+-- GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, INDEX, ALTER, REFERENCES
+--   ON macrorss.* TO 'macrorss'@'HOST';
 -- FLUSH PRIVILEGES;
+--
+-- If the deployment goes through ProxySQL, register the same application user
+-- in ProxySQL's mysql_users table and route it to the intended hostgroup. The
+-- backend MySQL account alone is not sufficient for connections through port 6033.

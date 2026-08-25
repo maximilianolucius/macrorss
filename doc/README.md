@@ -1,20 +1,21 @@
-# Documentación
+# MacroRSS documentation
 
-Espacio para el diseño y las decisiones del proyecto.
+This directory contains the design and operating documentation for the implemented collector.
 
-## Pendiente de definir
+## Index
 
-- **Fuentes**: qué feeds RSS/Atom se consumen (bancos centrales, institutos de
-  estadística, agencias, prensa financiera) y con qué frecuencia.
-- **Ingesta**: polling vs. push, deduplicación, control de `ETag` /
-  `Last-Modified`, política de reintentos y rate limiting.
-- **Modelo de datos**: esquema de los ítems normalizados y almacenamiento
-  (fichero, SQLite, Postgres/Timescale).
-- **Procesamiento**: extracción de entidades/indicadores, clasificación,
-  filtrado por relevancia macro.
-- **Salida**: API, feed agregado, notificaciones, informes.
-- **Operación**: scheduling, observabilidad, alertas de fallo.
+- [`architecture.md`](architecture.md) — component model, data flow and failure boundaries.
+- [`operacion.md`](operacion.md) — deployment pre-flight, service operation, recovery and chaos checks.
+- [`fuentes-primera-mano-gold-fx.md`](fuentes-primera-mano-gold-fx.md) — first-hand source catalog and XAUUSD/FX impact rationale.
+- [`../PLAN.md`](../PLAN.md) — original phased design, acceptance gates and failure model.
+- [`../IMPLEMENTATION_STATUS.md`](../IMPLEMENTATION_STATUS.md) — current implementation and validation status.
 
-## Índice
+## Documentation invariants
 
-_(vacío — añadir documentos a medida que se escriban)_
+- Treat `config/feeds.yaml` and `config/events.yaml` as the authoritative machine-readable source
+  catalog and event calendar.
+- Do not document credentials, tokens, private environment files or production secrets.
+- Distinguish code/CI validation from live-host liveness. Git records what was built and tested;
+  `systemctl`/runtime metrics are authoritative for whether a deployed daemon is currently running.
+- When an official endpoint changes, update the source adapter, fixture/regression test and relevant
+  documentation together.
