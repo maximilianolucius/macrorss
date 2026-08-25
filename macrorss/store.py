@@ -98,8 +98,8 @@ class MySQLStore:
                         await cursor.execute(
                             """
                             INSERT INTO event_observations (event_id, raw_item_id, observed_at)
-                            VALUES (%s, %s, %s)
-                            ON DUPLICATE KEY UPDATE observed_at = LEAST(observed_at, VALUES(observed_at))
+                            VALUES (%s, %s, %s) AS newrow
+                            ON DUPLICATE KEY UPDATE observed_at = LEAST(event_observations.observed_at, newrow.observed_at)
                             """,
                             (event_id, raw_id, _mysql_dt(record.raw.first_seen_at)),
                         )
@@ -116,11 +116,11 @@ class MySQLStore:
             INSERT INTO raw_items
                 (source_id, guid_hash, guid, url, title, raw_published_at, published_at,
                  first_seen_at, payload_json)
-            VALUES (%s, UNHEX(%s), %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, UNHEX(%s), %s, %s, %s, %s, %s, %s, %s) AS newrow
             ON DUPLICATE KEY UPDATE
                 id = LAST_INSERT_ID(id),
-                first_seen_at = LEAST(first_seen_at, VALUES(first_seen_at)),
-                payload_json = VALUES(payload_json)
+                first_seen_at = LEAST(raw_items.first_seen_at, newrow.first_seen_at),
+                payload_json = newrow.payload_json
             """,
             (
                 raw.source_id,
@@ -154,13 +154,13 @@ class MySQLStore:
                 (event_fingerprint, canonical_url, canonical_title, institution, event_type,
                  published_at, first_seen_at, first_source_id, tags_json, rank_gold, rank_fx,
                  first_emitted_at)
-            VALUES (UNHEX(%s), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (UNHEX(%s), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) AS newrow
             ON DUPLICATE KEY UPDATE
                 id = LAST_INSERT_ID(id),
-                first_seen_at = LEAST(first_seen_at, VALUES(first_seen_at)),
-                rank_gold = COALESCE(LEAST(rank_gold, VALUES(rank_gold)), rank_gold, VALUES(rank_gold)),
-                rank_fx = COALESCE(LEAST(rank_fx, VALUES(rank_fx)), rank_fx, VALUES(rank_fx)),
-                first_emitted_at = COALESCE(first_emitted_at, VALUES(first_emitted_at))
+                first_seen_at = LEAST(events.first_seen_at, newrow.first_seen_at),
+                rank_gold = COALESCE(LEAST(events.rank_gold, newrow.rank_gold), events.rank_gold, newrow.rank_gold),
+                rank_fx = COALESCE(LEAST(events.rank_fx, newrow.rank_fx), events.rank_fx, newrow.rank_fx),
+                first_emitted_at = COALESCE(events.first_emitted_at, newrow.first_emitted_at)
             """,
             (
                 event.event_fingerprint,
@@ -198,11 +198,11 @@ class MySQLStore:
                         INSERT INTO feed_state
                             (source_id, etag, last_modified, last_success_at, last_attempt_at,
                              consecutive_errors, last_status)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s) AS newrow
                         ON DUPLICATE KEY UPDATE
-                            etag=VALUES(etag), last_modified=VALUES(last_modified),
-                            last_success_at=VALUES(last_success_at), last_attempt_at=VALUES(last_attempt_at),
-                            consecutive_errors=VALUES(consecutive_errors), last_status=VALUES(last_status)
+                            etag=newrow.etag, last_modified=newrow.last_modified,
+                            last_success_at=newrow.last_success_at, last_attempt_at=newrow.last_attempt_at,
+                            consecutive_errors=newrow.consecutive_errors, last_status=newrow.last_status
                         """,
                         (
                             state.source_id,
