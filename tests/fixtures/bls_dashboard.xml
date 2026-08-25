@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xml:base="https://www.bls.gov/feeds">
+  <channel>
+    <title>Major Economic Indicators Latest Numbers</title>
+    <link>https://www.bls.gov/bls/</link>
+    <description>Latest Numbers for Major Economic Indicators</description>
+    <item>
+      <title>Major Economic Indicators Latest Numbers</title>
+      <link>https://www.bls.gov/bls/</link>
+      <description><![CDATA[<p>Consumer Price Index (CPI): <strong>+0.1% in Jul 2026</strong></p>]]></description>
+    </item>
+  </channel>
+</rss>

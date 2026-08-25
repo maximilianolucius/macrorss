@@ -37,7 +37,7 @@ class MySQLStore:
         if self.pool is not None:
             return
         try:
-            import asyncmy  # type: ignore[import-untyped]
+            import asyncmy
         except ModuleNotFoundError as exc:
             raise StoreUnavailable("asyncmy is not installed; install project dependencies") from exc
         try:

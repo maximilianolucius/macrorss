@@ -55,7 +55,12 @@ feeds:
     rank_fx: 2
     requires_user_agent: true
     poll: {base_seconds: 45, min_seconds: 1}
-    notes: "CPI, NFP, PPI, JOLTS; browser-like User-Agent required."
+    parser_options: {dedup: content}
+    notes: >-
+      CPI, NFP, PPI, JOLTS. Dashboard feed: ONE item whose <link> is always
+      https://www.bls.gov/bls/ and whose <description> carries the numbers.
+      Requires dedup=content -- with guid-only identity every release after the
+      first is silently dropped as a duplicate.
 
   - id: bea-news
     name: "BEA — News"
@@ -83,27 +88,44 @@ feeds:
 
   - id: treasury-federal-register
     name: "U.S. Treasury — Federal Register"
-    url: "https://www.federalregister.gov/documents/search?conditions%5Bagencies%5D%5B%5D=treasury-department&format=rss"
-    transport: rss
-    parser: feed
+    url: "https://www.federalregister.gov/api/v1/documents.json?per_page=20&order=newest&conditions%5Bagencies%5D%5B%5D=treasury-department&fields%5B%5D=title&fields%5B%5D=html_url&fields%5B%5D=publication_date&fields%5B%5D=document_number&fields%5B%5D=type"
+    transport: json
+    parser: generic_json
     priority: 4
     tags: [us_macro, gold, fx, regulation]
     rank_gold: 4
     rank_fx: 5
     poll: {base_seconds: 180}
-    notes: "Regulatory/OFAC complement; not a substitute for Treasury direct press releases."
+    parser_options:
+      items_path: results
+      title_key: title
+      url_key: html_url
+      guid_key: document_number
+      published_key: publication_date
+    notes: >-
+      Regulatory/OFAC complement; not a substitute for Treasury direct press releases.
+      Uses the JSON API: the /documents/search RSS endpoint 302s to
+      unblock.federalregister.gov (anti-bot wall) and returns HTTP 200 with zero items.
 
   - id: presidential-docs
     name: "Federal Register — Presidential Documents"
-    url: "https://www.federalregister.gov/documents/search?conditions%5Btype%5D%5B%5D=PRESDOCU&format=rss"
-    transport: rss
-    parser: feed
+    url: "https://www.federalregister.gov/api/v1/documents.json?per_page=20&order=newest&conditions%5Btype%5D%5B%5D=PRESDOCU&fields%5B%5D=title&fields%5B%5D=html_url&fields%5B%5D=publication_date&fields%5B%5D=document_number&fields%5B%5D=type"
+    transport: json
+    parser: generic_json
     priority: 3
     tags: [us_macro, gold, fx, regulation, geopolitics]
     rank_gold: 5
     rank_fx: 5
     poll: {base_seconds: 120}
-    notes: "Executive orders, tariffs and other presidential documents."
+    parser_options:
+      items_path: results
+      title_key: title
+      url_key: html_url
+      guid_key: document_number
+      published_key: publication_date
+    notes: >-
+      Executive orders, tariffs and other presidential documents.
+      Uses the JSON API for the same anti-bot reason as treasury-federal-register.
 
   - id: ecb-mid
     name: "ECB — Market Information Dissemination"

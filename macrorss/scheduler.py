@@ -101,7 +101,7 @@ class AdaptiveScheduler:
     @staticmethod
     def backoff(source: SourceConfig, consecutive_errors: int) -> float:
         exponent = min(max(consecutive_errors - 1, 0), 7)
-        return min(max(source.poll.base_seconds, 5.0) * (2**exponent), 900.0)
+        return float(min(max(source.poll.base_seconds, 5.0) * (2**exponent), 900.0))
 
 
 def _parse_utc(value: Any, where: str) -> datetime:
