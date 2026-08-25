@@ -12,13 +12,37 @@
 If `innodb_flush_log_at_trx_commit` is not `1`, MacroRSS still captures durably through its local
 spool, but MySQL alone cannot be treated as the crash-loss boundary.
 
+When ProxySQL is used, point `MACRORSS_DB_PORT` at the ProxySQL listener (validated deployment:
+`6033`) and ensure the application user is configured both in backend MySQL and ProxySQL.
+
 ## 2. Start / stop
+
+### Hardened system service
 
 ```bash
 sudo systemctl enable --now macrorss
 sudo systemctl status macrorss
 journalctl -u macrorss -f
 ```
+
+### User service
+
+For a non-root/workstation deployment:
+
+```bash
+systemctl --user enable --now macrorss
+systemctl --user status macrorss
+journalctl --user -u macrorss -f
+```
+
+If it must start at boot without an interactive login:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+The live `systemctl ... status` output and MacroRSS runtime metrics are authoritative for whether a
+deployed daemon is currently running; Git commit state alone is not a liveness check.
 
 Graceful stop seals the current spool segment. `kill -9` is also recoverable: on next start the
 last `.open` segment is truncated only to its last complete newline and converted to `.ready`.
@@ -67,7 +91,9 @@ macrorss probe SOURCE_ID
 
 - HTTP errors indicate transport/rate-limit/access issues.
 - HTTP 200 with zero parsed items on a normally active source points to a parser/page change.
+- Dashboard feeds whose URL/guid is stable across releases require content-aware deduplication.
 - HTML adapters must be updated together with a fixture and parser test.
+- Prefer an official documented JSON API when an RSS endpoint redirects to an anti-bot page.
 
 Never silently replace a first-hand channel with a slower aggregator without documenting the
 latency/capability trade-off.
@@ -97,6 +123,6 @@ The local spool is not a long-term backup. `archive/*.done` is a short rolling r
 
 ## 10. Chaos checks before production changes
 
-Run `scripts/chaos-checklist.sh` and perform the destructive cases only on a test host/database.
+Run `scripts/chaos-checklist.sh` and perform destructive cases only on a test host/database.
 The acceptance condition is zero loss of confirmed spool records and zero deterministic duplicate
 alerts after replay/restart.
