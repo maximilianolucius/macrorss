@@ -1,4 +1,4 @@
-"""Entry point: `python -m macrorss`."""
+"""Entry point for ``python -m macrorss``."""
 
 from macrorss.cli import main
 

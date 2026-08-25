@@ -1,198 +1,279 @@
-# MacroRSS — Fuentes de primera mano para trading de Gold (XAUUSD) y Forex
-# URLs verificadas con curl el 2026-08-25 (ver doc/fuentes-primera-mano-gold-fx.md)
-#
-# tags:
-#   us_macro       — núcleo macro EE.UU. (mueve USD, yields y XAUUSD)
-#   gold           — relevante para XAUUSD
-#   fx             — relevante para pares FX
-#   central_banks  — bancos centrales no-EE.UU.
-#   regulation     — regulación, sanciones, posicionamiento
-#   commodities    — mercado de oro/commodities propiamente dicho
-#
-# rank_gold / rank_fx: orden de impacto (1 = mayor) según el listado acordado.
-# enabled: false => fuente sin RSS confiable (scraping/newsletter), documentada pero inactiva.
-
-version: 1
+# MacroRSS source catalog — official/first-hand channels for XAUUSD and FX.
+# transport/parser are explicit so the core is not RSS-specific.
+version: 2
 
 defaults:
-  # BLS (y otros sitios .gov) devuelven 403 sin User-Agent de navegador
-  user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-  timeout_seconds: 15
+  transport: rss
+  parser: feed
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/148 Safari/537.36 MacroRSS/0.1"
+  timeout_seconds: 10
+  poll:
+    base_seconds: 45
+    pre_window_seconds: 5
+    burst_seconds: 1
+    post_window_seconds: 5
+    pre_window_minutes: 5
+    burst_lead_seconds: 30
+    burst_lag_seconds: 120
+    post_window_minutes: 10
+    jitter_fraction: 0.10
+    min_seconds: 1
 
 feeds:
-  # ── Núcleo macro EE.UU. (compartido gold + fx) ──────────────────────────────
   - id: fed-monetary
     name: "Federal Reserve — Monetary Policy / FOMC"
     url: "https://www.federalreserve.gov/feeds/press_monetary.xml"
+    transport: rss
+    parser: feed
+    priority: 1
     tags: [us_macro, gold, fx]
     rank_gold: 1
     rank_fx: 1
-    notes: "Comunicados FOMC y política monetaria. Driver #1 de oro (tasa real) y USD."
+    poll: {base_seconds: 30}
+    notes: "FOMC statements and monetary-policy releases."
 
   - id: fed-press-all
     name: "Federal Reserve — All Press Releases"
     url: "https://www.federalreserve.gov/feeds/press_all.xml"
+    transport: rss
+    parser: feed
+    priority: 2
     tags: [us_macro, gold, fx]
     rank_gold: 1
     rank_fx: 1
-    notes: "Incluye supervision, enforcement y anuncios no-FOMC. Redundante parcialmente con fed-monetary."
+    poll: {base_seconds: 45}
+    notes: "Redundant channel for source-race measurement and non-FOMC releases."
 
   - id: bls-latest
-    name: "BLS — Latest Numbers (CPI, NFP, PPI, JOLTS)"
+    name: "BLS — Latest Numbers"
     url: "https://www.bls.gov/feed/bls_latest.rss"
+    transport: rss
+    parser: feed
+    priority: 1
     tags: [us_macro, gold, fx]
     rank_gold: 2
     rank_fx: 2
     requires_user_agent: true
-    notes: "403 sin User-Agent de navegador. CPI y NFP son los datos que más mueven USD intradía."
+    poll: {base_seconds: 45, min_seconds: 1}
+    notes: "CPI, NFP, PPI, JOLTS; browser-like User-Agent required."
 
   - id: bea-news
-    name: "BEA — News (GDP, PCE, Personal Income)"
+    name: "BEA — News"
     url: "https://www.bea.gov/news/rss"
+    transport: rss
+    parser: feed
+    priority: 2
     tags: [us_macro, gold, fx]
     rank_gold: 3
     rank_fx: 3
-    notes: "Core PCE = indicador de inflación preferido de la Fed."
+    poll: {base_seconds: 45}
+    notes: "GDP, PCE and Personal Income/Outlays."
+
+  - id: treasury-press
+    name: "U.S. Treasury — Direct Press Releases"
+    url: "https://home.treasury.gov/news/press-releases"
+    transport: html
+    parser: treasury_press
+    priority: 1
+    tags: [us_macro, gold, fx, treasury]
+    rank_gold: 4
+    rank_fx: 5
+    poll: {base_seconds: 30}
+    notes: "Direct Treasury channel for refunding, buybacks, TIC and market-sensitive press releases."
 
   - id: treasury-federal-register
-    name: "U.S. Treasury — vía Federal Register (deuda, OFAC, sanciones)"
+    name: "U.S. Treasury — Federal Register"
     url: "https://www.federalregister.gov/documents/search?conditions%5Bagencies%5D%5B%5D=treasury-department&format=rss"
+    transport: rss
+    parser: feed
+    priority: 4
     tags: [us_macro, gold, fx, regulation]
     rank_gold: 4
     rank_fx: 5
-    notes: "Treasury eliminó su RSS propio. Federal Register cubre OFAC/sanciones; para auctions/press usar home.treasury.gov (sin RSS)."
+    poll: {base_seconds: 180}
+    notes: "Regulatory/OFAC complement; not a substitute for Treasury direct press releases."
 
   - id: presidential-docs
-    name: "Federal Register — Presidential Documents (órdenes ejecutivas, tarifas)"
-    url: "https://www.federalregister.gov/documents/search?conditions%5Btype%5D%5D=PRESDOCU&format=rss"
+    name: "Federal Register — Presidential Documents"
+    url: "https://www.federalregister.gov/documents/search?conditions%5Btype%5D%5B%5D=PRESDOCU&format=rss"
+    transport: rss
+    parser: feed
+    priority: 3
     tags: [us_macro, gold, fx, regulation, geopolitics]
     rank_gold: 5
     rank_fx: 5
-    notes: "Tarifas y órdenes ejecutivas: en 2024-2025 movieron oro y USD más que muchos datos macro."
+    poll: {base_seconds: 120}
+    notes: "Executive orders, tariffs and other presidential documents."
 
-  # ── Bancos centrales (FX + contexto de riesgo) ─────────────────────────────
   - id: ecb-mid
     name: "ECB — Market Information Dissemination"
     url: "https://mid.ecb.europa.eu/rss/mid.xml"
+    transport: rss
+    parser: feed
+    priority: 1
     tags: [fx, central_banks]
     rank_fx: 4
-    notes: "Canal del ECB diseñado para distribución de releases. EURUSD = par más líquido."
+    poll: {base_seconds: 30}
+    notes: "Primary fast ECB market-information channel."
 
   - id: ecb-press
     name: "ECB — Press Releases"
     url: "https://www.ecb.europa.eu/rss/press.html"
+    transport: rss
+    parser: feed
+    priority: 2
     tags: [fx, central_banks]
     rank_fx: 4
-    notes: "Complementario al MID."
+    poll: {base_seconds: 45}
+    notes: "Redundant ECB press-release channel."
 
   - id: boj-news
     name: "Bank of Japan — What's New"
     url: "https://www.boj.or.jp/en/rss/whatsnew.xml"
+    transport: rss
+    parser: feed
+    priority: 2
     tags: [fx, central_banks]
     rank_fx: 6
-    notes: "USDJPY. Ojo: la intervención cambiaria la decide el MOF, no el BoJ."
+    poll: {base_seconds: 45}
+    notes: "BoJ policy/news; FX intervention itself is decided by Japan MOF."
 
   - id: boe-news
     name: "Bank of England — News"
     url: "https://www.bankofengland.co.uk/rss/news"
+    transport: rss
+    parser: feed
+    priority: 2
     tags: [fx, central_banks]
     rank_fx: 7
-    notes: "GBP, el major más volátil."
+    poll: {base_seconds: 45}
 
   - id: snb-news
     name: "SNB — News"
     url: "https://www.snb.ch/public/rss/en/news"
+    transport: rss
+    parser: feed
+    priority: 2
     tags: [fx, central_banks]
     rank_fx: 8
-    notes: "CHF: historial de shocks (techo EURCHF 2015)."
+    poll: {base_seconds: 60}
 
   - id: snb-mopo
     name: "SNB — Monetary Policy"
     url: "https://www.snb.ch/public/rss/en/mopo"
+    transport: rss
+    parser: feed
+    priority: 2
     tags: [fx, central_banks]
     rank_fx: 8
-    notes: "Decisiones de política monetaria del SNB."
+    poll: {base_seconds: 45}
 
   - id: bis-cbspeeches
-    name: "BIS — Central Bank Speeches (todos los BCs)"
+    name: "BIS — Central Bank Speeches"
     url: "https://www.bis.org/doclist/cbspeeches.rss"
+    transport: rss
+    parser: feed
+    priority: 6
     tags: [fx, central_banks]
     rank_fx: 9
-    notes: "Un solo feed que agrega discursos de todos los banqueros centrales del mundo."
+    poll: {base_seconds: 300}
 
   - id: boc-feed
     name: "Bank of Canada — Feed"
     url: "https://www.bankofcanada.ca/feed/"
+    transport: rss
+    parser: feed
+    priority: 3
     tags: [fx, central_banks]
     rank_fx: 10
-    notes: "CAD."
+    poll: {base_seconds: 60}
 
-  # ── Regulación y posicionamiento ───────────────────────────────────────────
   - id: cftc-press
     name: "CFTC — Press Releases"
     url: "https://www.cftc.gov/RSS/RSSGP/rssgp.xml"
+    transport: rss
+    parser: feed
+    priority: 7
     tags: [regulation, gold, fx]
     rank_gold: 8
     rank_fx: 11
-    notes: "Anuncios regulatorios; el COT (posicionamiento en futuros de oro/FX) se publica semanalmente en la web, no por RSS."
+    poll: {base_seconds: 300}
 
   - id: cftc-enforcement
     name: "CFTC — Enforcement Actions"
     url: "https://www.cftc.gov/RSS/RSSENF/rssenf.xml"
+    transport: rss
+    parser: feed
+    priority: 9
     tags: [regulation]
-    notes: "Secundario: shocks regulatorios en mercados de futuros."
+    poll: {base_seconds: 600}
 
   - id: sec-press
     name: "SEC — Press Releases"
     url: "https://www.sec.gov/news/pressreleases.rss"
+    transport: rss
+    parser: feed
+    priority: 8
     tags: [regulation]
-    notes: "Solo shocks financieros/regulatorios grandes que afecten riesgo global."
+    poll: {base_seconds: 300}
 
-  # ── Sin RSS confiable: documentadas, deshabilitadas ────────────────────────
+  # Sources retained in the catalog but disabled until an official robust adapter/end-point is validated.
   - id: wgc
     name: "World Gold Council"
     url: null
     enabled: false
+    transport: html
+    parser: feed
     tags: [gold, commodities]
     rank_gold: 6
-    notes: "Demanda de bancos centrales, flujos ETF — el comprador marginal del oro. Sin RSS: scraping de gold.org o newsletter."
+    notes: "No robust official machine-readable endpoint validated yet."
 
   - id: cme-group
-    name: "CME Group — Media Room (márgenes COMEX, contratos)"
+    name: "CME Group — Media Room"
     url: null
     enabled: false
+    transport: html
+    parser: feed
     tags: [gold, commodities]
     rank_gold: 7
-    notes: "Hikes de margen en GC fuerzan liquidaciones. Sin RSS confiable."
+    notes: "Margin/COMEX announcements; adapter pending."
 
   - id: lbma
     name: "LBMA — News & Publications"
     url: null
     enabled: false
+    transport: html
+    parser: feed
     tags: [gold, commodities]
     rank_gold: 9
-    notes: "Benchmarks y reformas del mercado físico londinense. Sin RSS."
+    notes: "Official HTML adapter pending."
 
   - id: mof-japan
-    name: "Ministry of Finance Japan — Intervención cambiaria"
+    name: "Ministry of Finance Japan — FX intervention"
     url: null
     enabled: false
+    transport: html
+    parser: feed
     tags: [fx, central_banks]
     rank_fx: 6
-    notes: "Fuente primaria de intervención en USDJPY (la ejecuta el MOF). Sin RSS confiable: monitorear web + datos mensuales."
+    notes: "Primary authority for Japan FX intervention; robust adapter pending."
 
   - id: rba
     name: "Reserve Bank of Australia"
     url: "https://www.rba.gov.au/rss/"
     enabled: false
+    transport: rss
+    parser: feed
     tags: [fx, central_banks]
     rank_fx: 10
-    notes: "AUD. El índice de feeds existe pero devuelve 403 a bots; verificar manualmente los XML individuales."
+    notes: "Feed index is not itself a validated XML feed; individual endpoint selection pending."
 
   - id: imf
     name: "IMF — News"
     url: "https://www.imf.org/en/RSS-Feeds"
     enabled: false
+    transport: html
+    parser: feed
     tags: [fx, geopolitics]
     rank_fx: 12
-    notes: "Crisis de balanza de pagos en EM. Bloquea bots (403); requiere User-Agent completo o scraping."
+    notes: "Bot restrictions / endpoint validation pending."

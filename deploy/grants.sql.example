@@ -1,0 +1,5 @@
+-- Run as a MySQL administrator after replacing HOST and choosing the password interactively.
+-- Do NOT commit a real password.
+-- CREATE USER 'macrorss'@'HOST' IDENTIFIED BY '<STRONG-PASSWORD>';
+-- GRANT SELECT, INSERT, UPDATE ON macrorss.* TO 'macrorss'@'HOST';
+-- FLUSH PRIVILEGES;

@@ -1,60 +1,55 @@
-# Fuentes de primera mano para Gold (XAUUSD) y Forex — ordenadas por impacto
+# Fuentes de primera mano para Gold (XAUUSD) y Forex
 
-> URLs verificadas con `curl` el 2026-08-25. Config lista para macrorss en `config/feeds.yaml`.
+MacroRSS prioriza **fuentes oficiales observables directamente**. El criterio no es sólo que una
+URL exista: se mide qué canal detecta primero cada evento y se conserva redundancia deliberada para
+poder comparar RSS vs HTML/otros endpoints.
 
-## ⚠️ Notas de verificación (testeadas en vivo)
+La configuración ejecutable está en `config/feeds.yaml`.
 
-- ✅ Fed: `https://www.federalreserve.gov/feeds/press_all.xml` y `press_monetary.xml` (FOMC específico) → 200
-- ✅ BLS: `bls_latest.rss` existe pero devuelve **403 a bots** — el fetcher necesita `User-Agent` de navegador
-- ✅ BEA: `https://www.bea.gov/news/rss` → 200
-- ✅ ECB MID: `https://mid.ecb.europa.eu/rss/mid.xml` → 200
-- ✅ BoE: `https://www.bankofengland.co.uk/rss/news` → 200
-- ✅ BoJ: `https://www.boj.or.jp/en/rss/whatsnew.xml` → 200
-- ✅ SNB: `https://www.snb.ch/public/rss/en/news` y `/public/rss/en/mopo` → 200
-- ✅ SEC: `https://www.sec.gov/news/pressreleases.rss` → 200
-- ✅ CFTC: feeds reales en `/RSS/RSSGP/rssgp.xml` (press) y `/RSS/RSSENF/rssenf.xml` (enforcement)
-- ✅ BIS: `https://www.bis.org/doclist/cbspeeches.rss` (discursos de banqueros centrales)
-- ❌ **Treasury ya NO tiene RSS** en su sitio (eliminado). Alternativa verificada: **Federal Register** con RSS por agencia, ej. `https://www.federalregister.gov/documents/search?conditions[agencies][]=treasury-department&format=rss` → 200
+## Núcleo XAUUSD / USD
 
-## Fuentes adicionales recomendadas (no estaban en la lista original)
+1. **Federal Reserve — Monetary Policy/FOMC**: driver principal de expectativas de tasa real.
+2. **BLS**: CPI, Employment Situation/NFP, PPI y JOLTS.
+3. **BEA**: PCE/Core PCE y GDP.
+4. **U.S. Treasury directo**: `home.treasury.gov/news/press-releases`, monitorizado mediante adapter
+   HTML para refunding, buybacks, TIC y otros comunicados sensibles al mercado.
+5. **Federal Register — Treasury**: complemento regulatorio/OFAC; no se considera sustituto del
+   canal directo del Treasury.
+6. **Presidential Documents — Federal Register**: aranceles, órdenes ejecutivas y shocks de política
+   comercial con potencial de mover dólar/oro.
 
-1. **Federal Register** — no es opcional si se quiere primera mano: tarifas/aranceles, sanciones OFAC, órdenes ejecutivas. En 2024-2025 esto movió oro y USD más que muchos datos macro. RSS por agencia o por tipo de documento (`PRESDOCU`).
-2. **BIS — Central bank speeches** (`cbspeeches.rss`) — un solo feed que agrega discursos de TODOS los banqueros centrales del mundo. Ahorra suscribirse a 8 bancos por separado para discursos.
-3. **Ministerio de Finanzas de Japón (MOF)** — para USDJPY: la intervención cambiaria la ejecuta el MOF, no el BoJ. Sin RSS confiable, pero es la fuente primaria cuando USDJPY se mueve 300 pips en un minuto.
-4. **White House / Presidential Documents** (vía Federal Register) — para shocks de política comercial que golpean oro y dólar simultáneamente.
+## Núcleo FX
 
----
+- Fed/BLS/BEA/Treasury: común a casi todos los majors por el rol del USD.
+- ECB MID + ECB press: canales redundantes para EUR.
+- BoJ + Japan MOF: política JPY e intervención (el adapter MOF todavía está pendiente).
+- BoE: GBP.
+- SNB: CHF.
+- BoC: CAD.
+- BIS speeches: agregación oficial de discursos de bancos centrales.
 
-## 🥇 Listado GOLD (XAUUSD) — mayor a menor impacto
+## Regulación / posicionamiento
 
-| # | Fuente | Por qué / Feed |
-|---|--------|----------------|
-| 1 | **Federal Reserve** (FOMC, press) | Expectativas de tasa real = driver #1 del oro. `federalreserve.gov/feeds/press_monetary.xml` |
-| 2 | **BLS** (CPI, NFP, PPI, salarios) | Datos que mueven la Fed. `bls.gov/feed/bls_latest.rss` (UA de browser) |
-| 3 | **BEA** (Core PCE, GDP) | El PCE es el indicador de inflación preferido de la Fed. `bea.gov/news/rss` |
-| 4 | **U.S. Treasury** (subastas, deuda, yields) | Yields reales ↔ oro (correlación inversa). Vía Federal Register RSS |
-| 5 | **Federal Register / Presidential Docs** | Tarifas, sanciones, órdenes ejecutivas → flujo safe-haven |
-| 6 | **World Gold Council** | Demanda de bancos centrales (PBoC, etc.), flujos ETF — el comprador marginal del oro hoy. Sin RSS propio: scraping o newsletter |
-| 7 | **CME Group** (márgenes COMEX, contratos) | Hikes de margen en GC fuerzan liquidaciones — movimientos técnicos bruscos |
-| 8 | **CFTC COT** | Posicionamiento especulativo en futuros de oro — contrarian en extremos. `cftc.gov/RSS/RSSGP/rssgp.xml` + reportes semanales |
-| 9 | **LBMA** | Benchmarks, reformas del mercado físico londinense. Sin RSS: página de news |
-| 10 | **Geopolítica** (Reuters/AP commodities) | El oro es safe-haven: conflictos lo mueven más que datos de rutina |
+- CFTC press + enforcement.
+- SEC press.
 
-## 💱 Listado FX — mayor a menor impacto
+COT es valioso para contexto/posicionamiento semanal, pero no debe confundirse con un feed de
+headline intradía.
 
-| # | Fuente | Por qué / Feed |
-|---|--------|----------------|
-| 1 | **Federal Reserve** | El USD es ~88% de todo FX. `press_monetary.xml` |
-| 2 | **BLS** (CPI, NFP) | Los dos datos que más mueven USD en el día. `bls_latest.rss` |
-| 3 | **BEA** (PCE, GDP) | `bea.gov/news/rss` |
-| 4 | **ECB** | EURUSD = par más líquido del mundo. `mid.ecb.europa.eu/rss/mid.xml` |
-| 5 | **U.S. Treasury + OFAC** (vía Federal Register) | Sanciones congelan/mueven monedas enteras (RUB, etc.) |
-| 6 | **BoJ + MOF** | USDJPY: intervención directa y sorpresas de política (YCC). `boj.or.jp/en/rss/whatsnew.xml` |
-| 7 | **BoE** | GBP, el par más volátil de los majors. `bankofengland.co.uk/rss/news` |
-| 8 | **SNB** | CHF: historial de shocks (techo EURCHF 2015). `snb.ch/public/rss/en/news` |
-| 9 | **BIS central bank speeches** | Un feed para discursos de todos los BCs: `bis.org/doclist/cbspeeches.rss` |
-| 10 | **RBA / BoC / RBNZ** | Según pares AUD/CAD/NZD que se operen |
-| 11 | **CFTC COT (FX)** | Posicionamiento en futuros de divisas — extremos = reversals |
-| 12 | **IMF** | Crisis de balanza de pagos en EM, rescates que mueven pares exóticos |
+## Fuentes documentadas pero deshabilitadas
 
-**Regla práctica de solapamiento:** Fed + BLS + BEA + Treasury están en ambas listas porque el USD es el denominador común — configurar esos 4 feeds una sola vez y etiquetarlos como `us_macro` + `gold` + `fx` en macrorss.
+WGC, CME, LBMA, Japan MOF, RBA e IMF se mantienen en el catálogo con `enabled: false` hasta validar
+un endpoint oficial suficientemente robusto. Una página HTML existente no se habilita sólo por ser
+scrapeable: necesita adapter, fixture, test y health signal.
+
+## Calendarios de burst polling
+
+`config/events.yaml` contiene ventanas UTC para releases de alto impacto. Las fechas actuales se
+obtuvieron de calendarios oficiales de BLS, BEA, Federal Reserve y ECB. El archivo debe renovarse
+antes de expirar su última fecha; `check-config` valida su estructura.
+
+## Regla de solapamiento
+
+No se elimina redundancia entre canales oficiales si puede aportar latencia. Por ejemplo,
+`fed-monetary` y `fed-press-all` pueden observar el mismo comunicado. MacroRSS conserva dos
+`RawItem` y genera un solo `NormalizedEvent`; el contador de source-race indica qué canal ganó.

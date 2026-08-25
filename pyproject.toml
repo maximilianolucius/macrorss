@@ -4,26 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "macrorss"
-version = "0.0.1"
-description = "Agregación y procesamiento de feeds RSS macroeconómicos."
+version = "0.1.0"
+description = "Low-latency, resilient macro event sensor for Gold (XAUUSD) and FX."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "maximilianolucius" }]
-keywords = ["rss", "macro", "macroeconomics", "feeds", "news"]
+keywords = ["rss", "macro", "macroeconomics", "forex", "gold", "xauusd", "news"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
 ]
-dependencies = []
+dependencies = [
+    "httpx[http2]>=0.27,<1",
+    "feedparser>=6.0.11,<7",
+    "PyYAML>=6.0,<7",
+    "asyncmy>=0.2.9,<1",
+    "pyzmq>=26,<28",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
@@ -39,6 +47,7 @@ include = ["macrorss*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
@@ -46,7 +55,11 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+# These four rules are formatting/refactor preferences rather than correctness gates.
+# Keep Pyflakes, pycodestyle correctness checks and Bugbear enabled in CI.
+ignore = ["E501", "I001", "UP037", "SIM117"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
+warn_unreachable = true
