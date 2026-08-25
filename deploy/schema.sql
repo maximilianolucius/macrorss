@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS feed_state (
   last_attempt_at DATETIME(6) NULL,
   consecutive_errors INT UNSIGNED NOT NULL DEFAULT 0,
   last_status SMALLINT UNSIGNED NULL,
-  updated_at DATETIME(6) NOT NULL DEFAULT (UTC_TIMESTAMP(6)) ON UPDATE UTC_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   PRIMARY KEY (source_id),
   KEY ix_feed_state_success (last_success_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   delivered_at DATETIME(6) NULL,
   attempts INT UNSIGNED NOT NULL DEFAULT 0,
   last_error TEXT NULL,
-  updated_at DATETIME(6) NOT NULL DEFAULT (UTC_TIMESTAMP(6)) ON UPDATE UTC_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   PRIMARY KEY (id),
   UNIQUE KEY uq_delivery_event_sink (event_id, sink),
   KEY ix_delivery_pending (sink, delivered_at),
