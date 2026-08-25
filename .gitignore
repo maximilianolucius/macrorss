@@ -50,5 +50,7 @@ data/
 *.sqlite
 *.sqlite3
 *.log
+*.jsonl
+*.pid
 logs/
 tmp/
